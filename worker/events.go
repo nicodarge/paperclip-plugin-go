@@ -35,11 +35,12 @@ type eventParams struct {
 
 // HandleEvent registers the one receiver of every event, whether the host
 // pushes it as an onEvent request or as an onEvent notification (which the
-// host scopes with paperclipInvocation, and the receiver's ctx carries). A
-// notification is handled on a goroutine of its own, like a request; one whose
-// params do not decode is logged to the host and dropped. Without HandleEvent
-// an onEvent request goes to Handle, and a notification to ForwardNotification.
-// Call it before Serve.
+// host scopes with paperclipInvocation, and the receiver's ctx carries). It
+// owns both paths: it registers the onEvent handler itself (do not also
+// Handle onEvent), and no onEvent notification reaches ForwardNotification. A notification is handled on a goroutine of its own,
+// like a request; one whose params do not decode is logged to the host and
+// dropped. Without HandleEvent an onEvent request goes to Handle, and a
+// notification to ForwardNotification. Call it before Serve.
 func (w *Worker) HandleEvent(h EventHandler) {
 	w.events = h
 	w.Handle(onEventMethod, Typed(func(ctx context.Context, params eventParams) (any, error) {
@@ -56,22 +57,22 @@ func (w *Worker) eventNotification(n rpc.Envelope) {
 	if raw := n["params"]; len(raw) == 0 || string(raw) == "null" {
 		return
 	}
+	ctx := context.Background()
+	if id := InvocationIDOf(n); id != "" {
+		ctx = WithInvocation(ctx, id)
+	}
 	params, err := DecodeParams[eventParams](n["params"])
 	if err == nil && params.Event == nil {
 		err = rpc.Errorf(rpc.CodeInvalidParams, "Invalid params: no event")
 	}
 	if err != nil {
-		w.Logger().Error(context.Background(), fmt.Sprintf("Failed to handle event notification: %v", err), nil)
+		w.Logger().Error(ctx, fmt.Sprintf("Failed to handle event notification: %v", err), nil)
 		return
 	}
 	event := *params.Event
 	w.active.Add(1)
 	go func() {
 		defer w.active.Done()
-		ctx := context.Background()
-		if id := InvocationIDOf(n); id != "" {
-			ctx = WithInvocation(ctx, id)
-		}
 		w.deliver(ctx, event)
 	}()
 }

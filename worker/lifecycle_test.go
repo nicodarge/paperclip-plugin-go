@@ -151,18 +151,46 @@ func TestShutdown(t *testing.T) {
 	})
 }
 
-func TestReplyUnservedAnswersLikeTheSDK(t *testing.T) {
+// sdkReportedMethods is the order of the pushes of handleInitialize in
+// packages/plugins/sdk/src/worker-rpc-host.ts of Paperclip v2026.1117.0.
+var sdkReportedMethods = []string{
+	"validateConfig", "configChanged", "health", "shutdown", "prepareIdleSleep", "releaseIdleSleep", "handleApiRequest",
+	"detectExternalObjects", "workspaceOperation", "resourceLifecycle", "agentLifecycle", "routeAiConnection",
+	"resolveExternalObject", "refreshExternalObjects", "environmentValidateConfig", "environmentTask", "environmentProbe",
+	"environmentAcquireLease", "environmentResumeLease", "environmentReleaseLease", "environmentStopLease",
+	"environmentDestroyLease", "environmentInspectLease", "environmentRealizeWorkspace", "environmentExecute",
+	"environmentRunnerIngressEndpoint", "environmentSyncIn", "environmentSyncOut", "environmentStartInteractiveSetup",
+	"environmentGetInteractiveSetup", "environmentCaptureTemplate", "environmentCancelInteractiveSetup",
+	"environmentDeleteTemplate", "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose",
+	"duplexChannelOpen", "duplexChannelWrite", "duplexChannelStop", "duplexChannelClose",
+}
+
+func TestEveryMethodTheSDKReportsIsReportedInItsOrder(t *testing.T) {
+	registered := slices.Clone(sdkReportedMethods)
+	slices.Reverse(registered)
+	w := NewWorker(nil, nil)
+	for _, m := range registered {
+		w.Handle(m, func(context.Context, json.RawMessage) (any, error) { return nil, nil })
+	}
+	if got := w.SupportedMethods(); !slices.Equal(got, sdkReportedMethods) {
+		t.Errorf("SupportedMethods() = %v, want %v", got, sdkReportedMethods)
+	}
+}
+
+func TestReplyUnservedAnswersAsTheSDKDoesWithoutTheHook(t *testing.T) {
 	h := start(t, func(w *Worker) {
 		w.Handle("environmentProbe", func(context.Context, json.RawMessage) (any, error) { return "served", nil })
 		w.Forward = w.ReplyUnserved
 	})
 	notImplemented := []string{
-		"validateConfig", "handleWebhook", "handleApiRequest", "detectExternalObjects", "resolveExternalObject", "refreshExternalObjects",
-		"environmentValidateConfig", "environmentAcquireLease", "environmentResumeLease", "environmentReleaseLease", "environmentDestroyLease",
-		"environmentRealizeWorkspace", "environmentExecute", "environmentRunnerIngressEndpoint", "environmentSyncIn", "environmentSyncOut",
-		"environmentStartInteractiveSetup", "environmentGetInteractiveSetup", "environmentCaptureTemplate", "environmentCancelInteractiveSetup",
-		"environmentDeleteTemplate", "loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose",
-		"duplexChannelOpen", "duplexChannelWrite", "duplexChannelStop", "duplexChannelClose",
+		"validateConfig", "handleWebhook", "handleApiRequest", "detectExternalObjects", "workspaceOperation", "resourceLifecycle",
+		"agentLifecycle", "routeAiConnection", "resolveExternalObject", "refreshExternalObjects", "environmentValidateConfig",
+		"environmentTask", "environmentAcquireLease", "environmentResumeLease", "environmentReleaseLease", "environmentStopLease",
+		"environmentDestroyLease", "environmentInspectLease", "environmentRealizeWorkspace", "environmentExecute",
+		"environmentRunnerIngressEndpoint", "environmentSyncIn", "environmentSyncOut", "environmentStartInteractiveSetup",
+		"environmentGetInteractiveSetup", "environmentCaptureTemplate", "environmentCancelInteractiveSetup", "environmentDeleteTemplate",
+		"loginPtyOpen", "loginPtyInput", "loginPtyStop", "loginPtyClose", "duplexChannelOpen", "duplexChannelWrite",
+		"duplexChannelStop", "duplexChannelClose",
 	}
 	for _, method := range notImplemented {
 		e := h.call(t, `{"jsonrpc":"2.0","method":"`+method+`"}`).Err()
@@ -170,7 +198,30 @@ func TestReplyUnservedAnswersLikeTheSDK(t *testing.T) {
 			t.Errorf("%s: %+v", method, e)
 		}
 	}
-	for _, method := range []string{"getData", "performAction", "executeTool", "runJob", "onEvent", "configChanged", "health", "shutdown", "initialize", "nonsense"} {
+
+	workerErrors := map[string]string{
+		`{"jsonrpc":"2.0","method":"getData","params":{"key":"k1"}}`:           `No data handler registered for key "k1"`,
+		`{"jsonrpc":"2.0","method":"getData"}`:                                 `No data handler registered for key "undefined"`,
+		`{"jsonrpc":"2.0","method":"performAction","params":{"key":"a1"}}`:     `No action handler registered for key "a1"`,
+		`{"jsonrpc":"2.0","method":"executeTool","params":{"toolName":"t1"}}`:  `No tool handler registered for "t1"`,
+		`{"jsonrpc":"2.0","method":"runJob","params":{"job":{"jobKey":"j1"}}}`: `No handler registered for job "j1"`,
+		`{"jsonrpc":"2.0","method":"runJob","params":{"job":"j1"}}`:            `No handler registered for job "undefined"`,
+		`{"jsonrpc":"2.0","method":"runJob","params":{"job":{"jobKey":5}}}`:    `No handler registered for job "undefined"`,
+	}
+	for line, message := range workerErrors {
+		if e := h.call(t, line).Err(); e == nil || e.Code != rpc.CodeWorkerError || e.Message != message {
+			t.Errorf("%s: %+v, want WORKER_ERROR %q", line, e, message)
+		}
+	}
+
+	for method, want := range map[string]string{"onEvent": "null", "shutdown": "null", "health": `{"status":"ok"}`} {
+		if resp := h.call(t, `{"jsonrpc":"2.0","method":"`+method+`"}`); resp.Err() != nil || string(resp["result"]) != want {
+			t.Errorf("%s: %s, want %s", method, resp.Encode(), want)
+		}
+	}
+
+	// configChanged is the documented exception: METHOD_NOT_IMPLEMENTED would make the host restart the worker.
+	for _, method := range []string{"configChanged", "initialize", "prepareIdleSleep", "releaseIdleSleep", "nonsense"} {
 		e := h.call(t, `{"jsonrpc":"2.0","method":"`+method+`"}`).Err()
 		if e == nil || e.Code != rpc.CodeMethodNotFound || e.Message != "Unknown method: "+method {
 			t.Errorf("%s: %+v", method, e)

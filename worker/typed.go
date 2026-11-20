@@ -8,7 +8,7 @@ import (
 )
 
 // DecodeParams decodes the params of a host request into P; absent or null
-// params give P's zero value, and anything that does not fit is an
+// params give P's zero value (a nil pointer when P is a pointer type), and anything that does not fit is an
 // INVALID_PARAMS error.
 func DecodeParams[P any](raw json.RawMessage) (P, error) {
 	var params P

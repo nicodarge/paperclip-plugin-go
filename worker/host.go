@@ -128,8 +128,9 @@ func (i Issues) List(ctx context.Context, companyID string, limit, offset int, o
 }
 
 // IssueQuery is the filter of an issues.list call, the members of the SDK's
-// ctx.issues.list. The members left empty are not sent; Limit and Offset always
-// are, as List sends them.
+// ctx.issues.list. The members left empty are not sent, as the SDK leaves out
+// an undefined one. A zero Limit sends none, which the host reads as no window:
+// a limit of 0 would be an empty page, so one cannot be asked for.
 type IssueQuery struct {
 	CompanyID               string `json:"companyId"`
 	ProjectID               string `json:"projectId,omitempty"`
@@ -139,8 +140,8 @@ type IssueQuery struct {
 	OriginID                string `json:"originId,omitempty"`
 	Status                  string `json:"status,omitempty"`
 	IncludePluginOperations bool   `json:"includePluginOperations,omitempty"`
-	Limit                   int    `json:"limit"`
-	Offset                  int    `json:"offset"`
+	Limit                   int    `json:"limit,omitempty"`
+	Offset                  int    `json:"offset,omitempty"`
 }
 
 // ListFiltered decodes one page of the issues matching q into out.
@@ -213,7 +214,9 @@ func (w *Worker) Execution() Execution { return Execution{w} }
 // Log delivers one output chunk of the running environmentExecute call to the
 // host's runner log (ctx.execution.log). stream is "stdout" or "stderr", the
 // only names the host accepts; it drops a chunk sent outside the invocation
-// ctx is scoped to, and an empty one is not sent.
+// ctx is scoped to, and one longer than 1,000,000 characters
+// (MAX_EXECUTE_LOG_CHUNK_CHARS, counted in UTF-16 code units), so a caller
+// splits larger output itself. An empty chunk is not sent.
 func (x Execution) Log(ctx context.Context, stream, chunk string) {
 	if chunk == "" {
 		return

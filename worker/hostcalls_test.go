@@ -21,6 +21,9 @@ func TestEventsExecutionAndFilteredIssueCallsSendTheParametersTheSDKSends(t *tes
 			if err := w.Issues().ListFiltered(ctx, IssueQuery{CompanyID: "c1", Limit: 50}, &minimal); err != nil {
 				return nil, err
 			}
+			if err := w.Issues().ListFiltered(ctx, IssueQuery{CompanyID: "c1"}, &minimal); err != nil {
+				return nil, err
+			}
 			err := w.Issues().ListFiltered(ctx, IssueQuery{
 				CompanyID: "c1", ProjectID: "p1", AssigneeAgentID: "a1", OriginKind: "plugin:x", OriginKindPrefix: "plugin:",
 				OriginID: "o1", Status: "todo", IncludePluginOperations: true, Limit: 10, Offset: 20,
@@ -38,7 +41,8 @@ func TestEventsExecutionAndFilteredIssueCallsSendTheParametersTheSDKSends(t *tes
 	want := []string{
 		`events.subscribe {"eventPattern":"agent.run.cancelled","filter":null}`,
 		`events.subscribe {"eventPattern":"issue.*","filter":{"projectId":"p1"}}`,
-		`issues.list {"companyId":"c1","limit":50,"offset":0}`,
+		`issues.list {"companyId":"c1","limit":50}`,
+		`issues.list {"companyId":"c1"}`,
 		`issues.list {"companyId":"c1","projectId":"p1","assigneeAgentId":"a1","originKind":"plugin:x","originKindPrefix":"plugin:","originId":"o1","status":"todo","includePluginOperations":true,"limit":10,"offset":20}`,
 	}
 	if len(h.calls) != len(want) {
