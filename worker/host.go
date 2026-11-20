@@ -127,6 +127,27 @@ func (i Issues) List(ctx context.Context, companyID string, limit, offset int, o
 	return i.w.CallHost(ctx, "issues.list", params, out)
 }
 
+// IssueQuery is the filter of an issues.list call, the members of the SDK's
+// ctx.issues.list. The members left empty are not sent; Limit and Offset always
+// are, as List sends them.
+type IssueQuery struct {
+	CompanyID               string `json:"companyId"`
+	ProjectID               string `json:"projectId,omitempty"`
+	AssigneeAgentID         string `json:"assigneeAgentId,omitempty"`
+	OriginKind              string `json:"originKind,omitempty"`
+	OriginKindPrefix        string `json:"originKindPrefix,omitempty"`
+	OriginID                string `json:"originId,omitempty"`
+	Status                  string `json:"status,omitempty"`
+	IncludePluginOperations bool   `json:"includePluginOperations,omitempty"`
+	Limit                   int    `json:"limit"`
+	Offset                  int    `json:"offset"`
+}
+
+// ListFiltered decodes one page of the issues matching q into out.
+func (i Issues) ListFiltered(ctx context.Context, q IssueQuery, out any) error {
+	return i.w.CallHost(ctx, "issues.list", q, out)
+}
+
 // Get decodes one issue into out; an unknown issue decodes as JSON null.
 func (i Issues) Get(ctx context.Context, companyID, issueID string, out any) error {
 	params := struct {
@@ -164,6 +185,44 @@ func (i Issues) Update(ctx context.Context, companyID, issueID string, patch any
 		CompanyID string `json:"companyId"`
 	}{issueID, patch, companyID}
 	return i.w.CallHost(ctx, "issues.update", params, nil)
+}
+
+// Events is ctx.events.
+type Events struct{ w *Worker }
+
+// Events returns the event client.
+func (w *Worker) Events() Events { return Events{w} }
+
+// Subscribe asks the host to forward the events matching pattern, optionally
+// narrowed by filter, to this worker (ctx.events.on); a nil filter is sent as
+// null, as the SDK sends it. They arrive at the EventHandler of HandleEvent.
+func (e Events) Subscribe(ctx context.Context, pattern string, filter map[string]any) error {
+	params := struct {
+		EventPattern string         `json:"eventPattern"`
+		Filter       map[string]any `json:"filter"`
+	}{pattern, filter}
+	return e.w.CallHost(ctx, "events.subscribe", params, nil)
+}
+
+// Execution is ctx.execution.
+type Execution struct{ w *Worker }
+
+// Execution returns the execution client.
+func (w *Worker) Execution() Execution { return Execution{w} }
+
+// Log delivers one output chunk of the running environmentExecute call to the
+// host's runner log (ctx.execution.log). stream is "stdout" or "stderr", the
+// only names the host accepts; it drops a chunk sent outside the invocation
+// ctx is scoped to, and an empty one is not sent.
+func (x Execution) Log(ctx context.Context, stream, chunk string) {
+	if chunk == "" {
+		return
+	}
+	params := struct {
+		Stream string `json:"stream"`
+		Chunk  string `json:"chunk"`
+	}{stream, chunk}
+	x.w.NotifyHost(ctx, "execute.log", params)
 }
 
 // DB is ctx.db: read-only SQL on the tables the manifest lists

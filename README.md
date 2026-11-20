@@ -1,6 +1,6 @@
 # paperclip-plugin-go
 
-A Go implementation of the worker side of the [Paperclip](https://github.com/paperclipai/paperclip) plugin protocol. Paperclip starts a plugin worker as a child process and speaks newline-delimited JSON-RPC 2.0 with it over stdin and stdout; this module is the transport and routing of that worker, in Go, with the standard library only. It is not a port of `startWorkerRpcHost` of `@paperclipai/plugin-sdk`: the worker routes the host's requests to registered handlers or forwards them, and the plugin implements `initialize`, `health`, `shutdown`, `onEvent` and `runJob` itself.
+A Go implementation of the worker side of the [Paperclip](https://github.com/paperclipai/paperclip) plugin protocol. Paperclip starts a plugin worker as a child process and speaks newline-delimited JSON-RPC 2.0 with it over stdin and stdout; this module is the transport and routing of that worker, in Go, with the standard library only. It is not a port of `startWorkerRpcHost` of `@paperclipai/plugin-sdk`: the worker routes the host's requests to registered handlers or forwards them, and the plugin implements its methods itself, with helpers for the lifecycle (`initialize`, `health`, `shutdown`) and for events.
 
 Paperclip itself publishes no Go SDK.
 
@@ -9,7 +9,7 @@ Paperclip itself publishes no Go SDK.
 | Path | Content |
 | --- | --- |
 | `rpc/` | The wire protocol: `Envelope` (a JSON-RPC 2.0 message that keeps every top-level member as raw JSON, so a forwarded message carries members this code does not know), the protocol's error codes, and `Conn`, one NDJSON stream with its own outbound request ids |
-| `worker/` | `Worker`: serves the host's requests with registered handlers, forwards the rest, and calls back into the host (state, config, secrets, agents, issues, database, logger) |
+| `worker/` | `Worker`: serves the host's requests with registered handlers, forwards the rest, and calls back into the host (state, config, secrets, agents, issues, events, execution log, database, logger) |
 | `tools/<name>/` | One Go module per CI tool (`golangci-lint`, `svu`), pinned in its `go.mod` and verified by its `go.sum` |
 | `scripts/install-tools.sh` | Builds the pinned CI tools from `tools/` |
 
@@ -30,11 +30,15 @@ import (
 
 func main() {
     w := worker.NewWorker(os.Stdin, os.Stdout)
-    w.Handle("initialize", func(ctx context.Context, params json.RawMessage) (any, error) {
-        return map[string]bool{"ok": true}, nil
+    w.HandleLifecycle(worker.Lifecycle{
+        Initialize: func(ctx context.Context, _ worker.InitializeParams) error {
+            return w.Events().Subscribe(ctx, "agent.run.cancelled", nil)
+        },
+        AfterShutdown: func() { os.Exit(0) },
     })
-    w.Handle("health", func(ctx context.Context, _ json.RawMessage) (any, error) {
-        return map[string]string{"status": "ok"}, nil
+    w.HandleEvent(func(ctx context.Context, e worker.Event) error {
+        w.Logger().Info(ctx, "event "+e.EventType, nil)
+        return nil
     })
     w.HandleJob("sync", func(ctx context.Context, _ json.RawMessage) (any, error) {
         var n int
@@ -48,6 +52,11 @@ func main() {
 }
 ```
 
+- `HandleLifecycle` answers `initialize` (with the `supportedMethods` the registered handlers add up to, `Worker.SupportedMethods`, and an error on a second call), `health` (ok unless `Lifecycle.Health` says otherwise) and `shutdown`; `Lifecycle.AfterShutdown` runs once the shutdown response is written, and is where a plugin exits, as the SDK does.
+- `HandleEvent` receives every event the host pushes, as an `onEvent` request or as an `onEvent` notification (handled on its own goroutine, scoped to the invocation the notification carries); `Events().Subscribe` is `ctx.events.on`'s `events.subscribe`. A handler's error is logged to the host, never returned, as in the SDK. Without `HandleEvent`, `onEvent` goes to `Handle` and `ForwardNotification` as before.
+- `Worker.ReplyUnserved`, set as `Forward`, answers a request no handler owns the way the SDK does: `METHOD_NOT_IMPLEMENTED` for a host method a plugin may leave out, `METHOD_NOT_FOUND` for any other.
+- `Typed` adapts a function of decoded params to a `Handler` (`INVALID_PARAMS` when the params do not decode, `DecodeParams` is its decoder). `InvocationIDOf` reads the invocation a host message carries, to scope a notification with `WithInvocation`.
+- `Execution().Log` is `ctx.execution.log`, an `execute.log` notification the host drops without the invocation `ctx` carries. `Issues().ListFiltered` is `issues.list` with the SDK's filters (`IssueQuery`); `List` sends only the company, limit and offset.
 - `Handle` registers a host-to-worker method and `HandleJob` one scheduled job (a `runJob` call is routed by its `job.jobKey`); each call runs on its own goroutine. A returned `*rpc.Error` is sent as it is, any other error becomes a `WORKER_ERROR` response, and a panic is recovered into one.
 - A request no handler owns goes to `Worker.Forward`, and every notification to `Worker.ForwardNotification`, on the reading goroutine and in arrival order; without `Forward` the request is answered `METHOD_NOT_FOUND`. They exist for a plugin that fronts another worker: it owns some methods in Go and relays the others to a child process. `Worker.Host`, `rpc.Conn.WriteRaw` and `rpc.Envelope.With`/`Without` exist for the same router (to relay a line, or one with its id replaced, without re-encoding it).
 - Everything that runs on the reading goroutine must not block: `Forward`, `ForwardNotification`, the `Handlers` of `rpc.Conn.Serve` and the reply callback of `rpc.Conn.Request`. Calling `CallHost` or `Conn.Call` synchronously from one deadlocks, because the response can only be read by the goroutine that is waiting. Hand the work to a goroutine.

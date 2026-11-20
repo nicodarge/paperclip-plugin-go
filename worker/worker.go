@@ -47,6 +47,9 @@ type Worker struct {
 	// Stderr receives handler panics.
 	Stderr io.Writer
 
+	// events serves onEvent, in both of its forms, once HandleEvent set it.
+	events EventHandler
+
 	active sync.WaitGroup
 }
 
@@ -104,6 +107,10 @@ func (w *Worker) Serve() error {
 			_ = w.host.Send(rpc.NewError(req.ID(), rpc.Errorf(rpc.CodeMethodNotFound, "Unknown method: %s", req.Method())))
 		},
 		Notification: func(n rpc.Envelope) {
+			if w.events != nil && n.Method() == onEventMethod {
+				w.eventNotification(n)
+				return
+			}
 			if w.ForwardNotification != nil {
 				w.ForwardNotification(n)
 			}
@@ -121,7 +128,7 @@ func (w *Worker) Wait() { w.active.Wait() }
 func (w *Worker) serve(h Handler, req rpc.Envelope) {
 	call := &call{request: req}
 	ctx := context.WithValue(context.Background(), callKey{}, call)
-	if id := invocationIDOf(req); id != "" {
+	if id := InvocationIDOf(req); id != "" {
 		ctx = WithInvocation(ctx, id)
 	}
 	result, err := w.run(ctx, h, req)
@@ -190,11 +197,14 @@ func InvocationID(ctx context.Context) string {
 	return id
 }
 
-func invocationIDOf(req rpc.Envelope) string {
+// InvocationIDOf returns the id of the invocation a host message carries in
+// its paperclipInvocation member, or "". A request's Handler gets it in its
+// context already; a notification is scoped with WithInvocation.
+func InvocationIDOf(e rpc.Envelope) string {
 	var inv struct {
 		ID string `json:"id"`
 	}
-	if raw, ok := req["paperclipInvocation"]; ok {
+	if raw, ok := e["paperclipInvocation"]; ok {
 		_ = json.Unmarshal(raw, &inv)
 	}
 	return inv.ID
