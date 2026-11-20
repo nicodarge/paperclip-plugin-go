@@ -363,7 +363,7 @@ func TestKeepPendingOnCloseStillAnswersAWriteFailure(t *testing.T) {
 func TestKeepPendingOnCloseKeepsPendingRequestsWhenReadingFails(t *testing.T) {
 	boom := errors.New("boom")
 	var out bytes.Buffer
-	c := NewConn(iotestErrReader{boom}, &out)
+	c := NewConn(errReader{boom}, &out)
 	c.KeepPendingOnClose = true
 	settled := make(chan Envelope, 2)
 	req, _ := NewRequest(nil, "first", nil)
@@ -386,6 +386,6 @@ func TestKeepPendingOnCloseKeepsPendingRequestsWhenReadingFails(t *testing.T) {
 	}
 }
 
-type iotestErrReader struct{ err error }
+type errReader struct{ err error }
 
-func (r iotestErrReader) Read([]byte) (int, error) { return 0, r.err }
+func (r errReader) Read([]byte) (int, error) { return 0, r.err }
