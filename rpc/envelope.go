@@ -44,6 +44,7 @@ func Errorf(code int, format string, args ...any) *Error {
 // Kind classifies an envelope the way the SDK's type guards do.
 type Kind int
 
+// The kinds an envelope can be; KindInvalid is neither a request, a response nor a notification.
 const (
 	KindInvalid Kind = iota
 	KindResponse
@@ -222,11 +223,19 @@ func orNull(raw json.RawMessage) json.RawMessage {
 	return raw
 }
 
-// marshal keeps a json.RawMessage as it is and leaves <, > and & unescaped, as
-// JSON.stringify does.
+// marshal leaves <, > and & unescaped, as JSON.stringify does. A
+// json.RawMessage is compacted onto one line, since a line break inside it
+// would split the NDJSON frame, and an invalid one is an error.
 func marshal(v any) (json.RawMessage, error) {
 	if raw, ok := v.(json.RawMessage); ok {
-		return orNull(raw), nil
+		if len(raw) == 0 {
+			return nullJSON, nil
+		}
+		var compact bytes.Buffer
+		if err := json.Compact(&compact, raw); err != nil {
+			return nil, fmt.Errorf("invalid raw JSON: %w", err)
+		}
+		return compact.Bytes(), nil
 	}
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)

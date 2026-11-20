@@ -202,7 +202,7 @@ func (l Logger) Debug(ctx context.Context, message string, meta map[string]any) 
 	l.log(ctx, "debug", message, meta)
 }
 
-// Info sends a info log notification.
+// Info sends an info log notification.
 func (l Logger) Info(ctx context.Context, message string, meta map[string]any) {
 	l.log(ctx, "info", message, meta)
 }
@@ -212,7 +212,7 @@ func (l Logger) Warn(ctx context.Context, message string, meta map[string]any) {
 	l.log(ctx, "warn", message, meta)
 }
 
-// Error sends a error log notification.
+// Error sends an error log notification.
 func (l Logger) Error(ctx context.Context, message string, meta map[string]any) {
 	l.log(ctx, "error", message, meta)
 }

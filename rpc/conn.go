@@ -19,6 +19,8 @@ var ErrLineTooLong = errors.New("line exceeds the protocol's size limit")
 
 // Handlers receives what a Conn reads, on the reading goroutine and in arrival
 // order. A handler that blocks stalls the stream; hand long work to a goroutine.
+// A handler that calls Call, or a Worker's CallHost, and waits deadlocks: the
+// response it waits for can only be read by the goroutine it is blocking.
 // Responses never reach it: they settle the request they answer.
 type Handlers struct {
 	Request      func(Envelope)
@@ -41,6 +43,7 @@ type Conn struct {
 	mu      sync.Mutex
 	next    int64
 	pending map[int64]func(Envelope)
+	closed  bool
 }
 
 // NewConn wraps a reader and a writer. Each message is written with a single
@@ -69,11 +72,22 @@ func (c *Conn) write(b []byte) error {
 
 // Request sends e under a fresh id and calls reply at most once: with the
 // peer's response, or with an error response made up here when the message
-// cannot be written. The response still carries this Conn's id; the caller
-// re-labels it. A peer that never answers leaves the entry pending. It returns
-// a function that drops the entry, after which a late response is ignored.
+// cannot be written or the stream has ended. The response still carries this
+// Conn's id; the caller re-labels it. A peer that never answers leaves the
+// entry pending until the stream ends. It returns a function that drops the
+// entry, after which a late response is ignored.
+//
+// reply runs on the reading goroutine when the peer's response or the end of
+// the stream settles the request, so it must not block and must not call Call
+// or a Worker's CallHost: they wait for a response only the reading goroutine
+// can deliver.
 func (c *Conn) Request(e Envelope, reply func(Envelope)) (forget func()) {
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		reply(connectionClosed())
+		return func() {}
+	}
 	c.next++
 	id := c.next
 	c.pending[id] = reply
@@ -115,8 +129,32 @@ func (c *Conn) Pending() int {
 	return len(c.pending)
 }
 
-// Serve reads messages until the stream ends, which it reports as nil.
+func connectionClosed() Envelope {
+	return NewError(nil, Errorf(CodeWorkerUnavailable, "connection closed"))
+}
+
+// Serve reads messages until the stream ends, which it reports as nil, and then
+// answers every request still pending, and any made afterwards, with a
+// WORKER_UNAVAILABLE error. Call it once: two concurrent Serve calls would
+// interleave reads of the same stream.
 func (c *Conn) Serve(h Handlers) error {
+	err := c.read(h)
+	c.mu.Lock()
+	c.closed = true
+	ids := make([]int64, 0, len(c.pending))
+	for id := range c.pending {
+		ids = append(ids, id)
+	}
+	c.mu.Unlock()
+	for _, id := range ids {
+		if reply := c.take(id); reply != nil {
+			reply(connectionClosed())
+		}
+	}
+	return err
+}
+
+func (c *Conn) read(h Handlers) error {
 	for {
 		line, err := c.readLine()
 		if errors.Is(err, ErrLineTooLong) {

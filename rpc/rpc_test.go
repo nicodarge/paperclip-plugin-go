@@ -96,6 +96,41 @@ func TestNewResultAndNewError(t *testing.T) {
 	}
 }
 
+func TestRawMessageIsCompactedOntoOneLine(t *testing.T) {
+	raw := json.RawMessage("{\n  \"a\": [1,\n 2],\r\n\t\"s\": \"<&>\"\n}")
+	req, err := NewRequest(json.RawMessage("1"), "m", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := NewResult(json.RawMessage("1"), raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, e := range map[string]Envelope{"request": req, "result": res} {
+		out := e.Encode()
+		if bytes.Count(out, []byte("\n")) != 1 || out[len(out)-1] != '\n' {
+			t.Errorf("%s is not exactly one line: %q", name, out)
+		}
+		if _, err := Parse(out); err != nil {
+			t.Errorf("%s does not parse back: %v", name, err)
+		}
+	}
+	if got := string(res["result"]); got != `{"a":[1,2],"s":"<&>"}` {
+		t.Errorf("result: %s", got)
+	}
+}
+
+func TestInvalidRawMessageIsAnError(t *testing.T) {
+	for _, raw := range []string{`{"a":`, `{"a":1} x`, `not json`, `{"a":1}{"b":2}`} {
+		if _, err := NewRequest(nil, "m", json.RawMessage(raw)); err == nil {
+			t.Errorf("NewRequest accepted %q", raw)
+		}
+		if _, err := NewResult(json.RawMessage("1"), json.RawMessage(raw)); err == nil {
+			t.Errorf("NewResult accepted %q", raw)
+		}
+	}
+}
+
 // pipePair returns two Conns wired to each other.
 func pipePair() (a, b *Conn, closeA func()) {
 	ar, bw := io.Pipe()
@@ -188,6 +223,54 @@ func TestRequestThatCannotBeWrittenIsAnsweredHere(t *testing.T) {
 	}
 	if c.Pending() != 0 {
 		t.Errorf("the failed request is still pending")
+	}
+}
+
+func TestServeSettlesPendingRequestsWhenTheStreamEnds(t *testing.T) {
+	ar, bw := io.Pipe()
+	br, aw := io.Pipe()
+	a, b := NewConn(ar, aw), NewConn(br, bw)
+	go func() {
+		_ = b.Serve(Handlers{Request: func(Envelope) { _ = bw.Close() }})
+	}()
+	served := make(chan error, 1)
+	go func() { served <- a.Serve(Handlers{}) }()
+
+	type outcome struct {
+		resp Envelope
+		err  error
+	}
+	got := make(chan outcome, 1)
+	go func() {
+		req, _ := NewRequest(nil, "never", nil)
+		resp, err := a.Call(context.Background(), req)
+		got <- outcome{resp, err}
+	}()
+	select {
+	case o := <-got:
+		if o.err != nil {
+			t.Fatalf("err = %v", o.err)
+		}
+		if e := o.resp.Err(); e == nil || e.Code != CodeWorkerUnavailable || e.Message != "connection closed" {
+			t.Errorf("reply: %+v", e)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the pending call was not settled when the stream ended")
+	}
+	if err := <-served; err != nil {
+		t.Errorf("Serve: %v", err)
+	}
+	if a.Pending() != 0 {
+		t.Errorf("%d requests left pending", a.Pending())
+	}
+
+	late, _ := NewRequest(nil, "late", nil)
+	resp, err := a.Call(context.Background(), late)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := resp.Err(); e == nil || e.Code != CodeWorkerUnavailable {
+		t.Errorf("a request after the end was not refused: %+v", e)
 	}
 }
 
