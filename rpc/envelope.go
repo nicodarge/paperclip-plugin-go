@@ -44,6 +44,7 @@ func Errorf(code int, format string, args ...any) *Error {
 // Kind classifies an envelope the way the SDK's type guards do.
 type Kind int
 
+// The kinds an envelope can be; KindInvalid is neither a request, a response nor a notification.
 const (
 	KindInvalid Kind = iota
 	KindResponse
