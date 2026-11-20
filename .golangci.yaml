@@ -1,0 +1,30 @@
+---
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  enable:
+    - bodyclose
+    - errorlint
+    - gosec
+    - misspell
+    - nolintlint
+    - revive
+    - unconvert
+    - unparam
+  settings:
+    govet:
+      enable:
+        - shadow
+    gosec:
+      config:
+        global:
+          nosec: true
+  exclusions:
+    generated: disable
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
