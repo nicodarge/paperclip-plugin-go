@@ -312,6 +312,7 @@ func TestServeClassifiesAndSurvivesBadLines(t *testing.T) {
 func TestKeepPendingOnCloseLeavesPendingRequestsPending(t *testing.T) {
 	ar, bw := io.Pipe()
 	br, aw := io.Pipe()
+	t.Cleanup(func() { _ = aw.Close() })
 	a, b := NewConn(ar, aw), NewConn(br, bw)
 	a.KeepPendingOnClose = true
 	go func() {
@@ -358,3 +359,33 @@ func TestKeepPendingOnCloseStillAnswersAWriteFailure(t *testing.T) {
 		t.Errorf("the failed request is still pending")
 	}
 }
+
+func TestKeepPendingOnCloseKeepsPendingRequestsWhenReadingFails(t *testing.T) {
+	boom := errors.New("boom")
+	var out bytes.Buffer
+	c := NewConn(iotestErrReader{boom}, &out)
+	c.KeepPendingOnClose = true
+	settled := make(chan Envelope, 2)
+	req, _ := NewRequest(nil, "first", nil)
+	c.Request(req, func(e Envelope) { settled <- e })
+	if err := c.Serve(Handlers{}); !errors.Is(err, boom) {
+		t.Fatalf("Serve = %v, want %v", err, boom)
+	}
+	if c.Pending() != 1 {
+		t.Errorf("Pending = %d, want 1", c.Pending())
+	}
+	late, _ := NewRequest(nil, "late", nil)
+	c.Request(late, func(e Envelope) { settled <- e })
+	if c.Pending() != 2 || bytes.Count(out.Bytes(), []byte("\n")) != 2 {
+		t.Errorf("Pending = %d, written %q: the later request was not written and kept", c.Pending(), out.String())
+	}
+	select {
+	case e := <-settled:
+		t.Errorf("a request was settled: %+v", e.Err())
+	default:
+	}
+}
+
+type iotestErrReader struct{ err error }
+
+func (r iotestErrReader) Read([]byte) (int, error) { return 0, r.err }

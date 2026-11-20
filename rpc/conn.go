@@ -35,7 +35,8 @@ type Handlers struct {
 // Conn is one NDJSON JSON-RPC stream with its own outbound id space.
 type Conn struct {
 	// KeepPendingOnClose, set before Serve and left alone afterwards, changes
-	// what the end of the stream does to outgoing requests: Serve then returns
+	// what the end of the stream, or a failure to read it, does to outgoing
+	// requests: Serve then returns
 	// without settling the ones still pending, which stay pending, and Request
 	// keeps working as before the end (it writes the message, and answers with
 	// WORKER_UNAVAILABLE only when the write fails). It is for a Conn whose
@@ -82,9 +83,10 @@ func (c *Conn) write(b []byte) error {
 
 // Request sends e under a fresh id and calls reply at most once: with the
 // peer's response, or with an error response made up here when the message
-// cannot be written or the stream has ended. The response still carries this
-// Conn's id; the caller re-labels it. A peer that never answers leaves the
-// entry pending until the stream ends. It returns a function that drops the
+// cannot be written or the stream has ended (unless KeepPendingOnClose is set).
+// The response still carries this Conn's id; the caller re-labels it. A peer
+// that never answers leaves the entry pending until the stream ends (unless
+// KeepPendingOnClose is set). It returns a function that drops the
 // entry, after which a late response is ignored.
 //
 // reply runs on the reading goroutine when the peer's response or the end of
@@ -143,8 +145,8 @@ func connectionClosed() Envelope {
 	return NewError(nil, Errorf(CodeWorkerUnavailable, "connection closed"))
 }
 
-// Serve reads messages until the stream ends, which it reports as nil, and then
-// answers every request still pending, and any made afterwards, with a
+// Serve reads messages until the stream ends, which it reports as nil, or fails
+// to read, which it reports as that error, and then answers every request still pending, and any made afterwards, with a
 // WORKER_UNAVAILABLE error, unless KeepPendingOnClose is set. Call it once: two
 // concurrent Serve calls would interleave reads of the same stream.
 func (c *Conn) Serve(h Handlers) error {
