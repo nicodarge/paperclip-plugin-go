@@ -34,6 +34,16 @@ type Handlers struct {
 
 // Conn is one NDJSON JSON-RPC stream with its own outbound id space.
 type Conn struct {
+	// KeepPendingOnClose, set before Serve and left alone afterwards, changes
+	// what the end of the stream does to outgoing requests: Serve then returns
+	// without settling the ones still pending, which stay pending, and Request
+	// keeps working as before the end (it writes the message, and answers with
+	// WORKER_UNAVAILABLE only when the write fails). It is for a Conn whose
+	// peer's exit is reported to the host by other means, such as a router that
+	// ends its own process so that the host rejects the forwarded calls itself.
+	// The default settles every pending request and refuses later ones.
+	KeepPendingOnClose bool
+
 	r       *bufio.Reader
 	maxLine int
 
@@ -135,10 +145,13 @@ func connectionClosed() Envelope {
 
 // Serve reads messages until the stream ends, which it reports as nil, and then
 // answers every request still pending, and any made afterwards, with a
-// WORKER_UNAVAILABLE error. Call it once: two concurrent Serve calls would
-// interleave reads of the same stream.
+// WORKER_UNAVAILABLE error, unless KeepPendingOnClose is set. Call it once: two
+// concurrent Serve calls would interleave reads of the same stream.
 func (c *Conn) Serve(h Handlers) error {
 	err := c.read(h)
+	if c.KeepPendingOnClose {
+		return err
+	}
 	c.mu.Lock()
 	c.closed = true
 	ids := make([]int64, 0, len(c.pending))

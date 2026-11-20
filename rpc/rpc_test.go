@@ -308,3 +308,53 @@ func TestServeClassifiesAndSurvivesBadLines(t *testing.T) {
 		t.Errorf("got  %s\nwant %s", got, want)
 	}
 }
+
+func TestKeepPendingOnCloseLeavesPendingRequestsPending(t *testing.T) {
+	ar, bw := io.Pipe()
+	br, aw := io.Pipe()
+	a, b := NewConn(ar, aw), NewConn(br, bw)
+	a.KeepPendingOnClose = true
+	go func() {
+		_ = b.Serve(Handlers{Request: func(Envelope) { _ = bw.Close() }})
+	}()
+	served := make(chan error, 1)
+	go func() { served <- a.Serve(Handlers{}) }()
+
+	settled := make(chan Envelope, 2)
+	req, _ := NewRequest(nil, "never", nil)
+	a.Request(req, func(e Envelope) { settled <- e })
+	if err := <-served; err != nil {
+		t.Errorf("Serve: %v", err)
+	}
+
+	late, _ := NewRequest(nil, "late", nil)
+	a.Request(late, func(e Envelope) { settled <- e })
+	select {
+	case e := <-settled:
+		t.Errorf("a request was settled after the end: %+v", e.Err())
+	case <-time.After(100 * time.Millisecond):
+	}
+	if a.Pending() != 2 {
+		t.Errorf("Pending = %d, want 2", a.Pending())
+	}
+}
+
+func TestKeepPendingOnCloseStillAnswersAWriteFailure(t *testing.T) {
+	r, w := io.Pipe()
+	_ = w.Close()
+	_ = r.Close()
+	c := NewConn(strings.NewReader(""), w)
+	c.KeepPendingOnClose = true
+	if err := c.Serve(Handlers{}); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	got := make(chan Envelope, 1)
+	req, _ := NewRequest(nil, "x", nil)
+	c.Request(req, func(e Envelope) { got <- e })
+	if e := (<-got).Err(); e == nil || e.Code != CodeWorkerUnavailable || e.Message == "connection closed" {
+		t.Errorf("reply: %+v", e)
+	}
+	if c.Pending() != 0 {
+		t.Errorf("the failed request is still pending")
+	}
+}
