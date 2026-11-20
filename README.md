@@ -1,6 +1,6 @@
 # paperclip-plugin-go
 
-A Go implementation of the worker side of the [Paperclip](https://github.com/paperclipai/paperclip) plugin protocol: what `startWorkerRpcHost` of `@paperclipai/plugin-sdk` does for a TypeScript plugin. Paperclip starts a plugin worker as a child process and speaks newline-delimited JSON-RPC 2.0 with it over stdin and stdout; this module is that worker, in Go, with the standard library only.
+A Go implementation of the worker side of the [Paperclip](https://github.com/paperclipai/paperclip) plugin protocol. Paperclip starts a plugin worker as a child process and speaks newline-delimited JSON-RPC 2.0 with it over stdin and stdout; this module is the transport and routing of that worker, in Go, with the standard library only. It is not a port of `startWorkerRpcHost` of `@paperclipai/plugin-sdk`: the worker routes the host's requests to registered handlers or forwards them, and the plugin implements `initialize`, `health`, `shutdown`, `onEvent` and `runJob` itself.
 
 Paperclip itself publishes no Go SDK.
 
@@ -30,6 +30,9 @@ import (
 
 func main() {
     w := worker.NewWorker(os.Stdin, os.Stdout)
+    w.Handle("initialize", func(ctx context.Context, params json.RawMessage) (any, error) {
+        return map[string]bool{"ok": true}, nil
+    })
     w.Handle("health", func(ctx context.Context, _ json.RawMessage) (any, error) {
         return map[string]string{"status": "ok"}, nil
     })
@@ -46,21 +49,21 @@ func main() {
 ```
 
 - `Handle` registers a host-to-worker method and `HandleJob` one scheduled job (a `runJob` call is routed by its `job.jobKey`); each call runs on its own goroutine. A returned `*rpc.Error` is sent as it is, any other error becomes a `WORKER_ERROR` response, and a panic is recovered into one.
-- A request no handler owns goes to `Worker.Forward`, and every notification to `Worker.ForwardNotification`, on the reading goroutine and in arrival order; without `Forward` the request is answered `METHOD_NOT_FOUND`. This lets a Go worker own some methods and relay the others to a child process.
+- A request no handler owns goes to `Worker.Forward`, and every notification to `Worker.ForwardNotification`, on the reading goroutine and in arrival order; without `Forward` the request is answered `METHOD_NOT_FOUND`. They exist for a plugin that fronts another worker: it owns some methods in Go and relays the others to a child process. `Worker.Host`, `rpc.Conn.WriteRaw` and `rpc.Envelope.With`/`Without` exist for the same router (to relay a line, or one with its id replaced, without re-encoding it).
+- Everything that runs on the reading goroutine must not block: `Forward`, `ForwardNotification`, the `Handlers` of `rpc.Conn.Serve` and the reply callback of `rpc.Conn.Request`. Calling `CallHost` or `Conn.Call` synchronously from one deadlocks, because the response can only be read by the goroutine that is waiting. Hand the work to a goroutine.
+- `Serve` runs once. When the host closes the stream it settles the calls still waiting with a `WORKER_UNAVAILABLE` error, and refuses later ones the same way. `Worker.Wait` is for after `Serve` has returned.
 - A worker-to-host call must be made with the `context.Context` the handler received: `CallHost` echoes the invocation id in it, which is how the host resolves the company of the call. A call from a detached context loses that scope.
 - `AfterReply` runs a function once the handler's response has been written (a `shutdown` handler that exits needs it).
 
 ## Exported API
 
-`rpc`: `Envelope` (`Parse`, `NewRequest`, `NewResult`, `NewError`, and the methods `Kind`, `Method`, `ID`, `Err`, `With`, `Without`, `Encode`), `Error` and `Errorf`, `Kind`, the `Code*` constants, `Conn` (`NewConn`, `Send`, `WriteRaw`, `Request`, `Call`, `Pending`, `Serve`), `Handlers`, `MaxLineBytes`, `ErrLineTooLong`.
-
-`worker`: `Worker` (`NewWorker`, `Handle`, `HandleJob`, `Serve`, `Wait`, `Host`, `CallHost`, `NotifyHost`, `Forward`, `ForwardNotification`, `Stderr`), `Handler`, `DefaultCallTimeout`, `Request`, `AfterReply`, `WithInvocation`, `InvocationID`, and the host clients `State`, `Config`, `Secrets`, `Agents`, `Issues`, `DB` and `Logger`, reached through the methods of the same name on `Worker`. `go doc` lists the signatures.
+`go doc github.com/nicodarge/paperclip-plugin-go/rpc` and `go doc github.com/nicodarge/paperclip-plugin-go/worker` list it.
 
 ## Releases
 
 A push to `production` runs `release.yaml`:
 
-1. `svu next` derives the version from the conventional commits since the last tag: `fix:` releases a patch, `feat:` a minor, `feat!:` or a `BREAKING CHANGE:` footer a major. Other types (`chore:`, `docs:`, `ci:`, `test:`, `refactor:`) release nothing.
+1. `svu next --v0` derives the version from the conventional commits since the last tag: `fix:` releases a patch, `feat:` a minor, `feat!:` or a `BREAKING CHANGE:` footer a major, except that while the module is `v0` a breaking change bumps the minor, so a tag never reaches `v1.0.0` by a commit message. Other types (`chore:`, `docs:`, `ci:`, `test:`, `refactor:`) release nothing.
 2. The job tags the commit `vX.Y.Z`, pushes the tag and creates the GitHub release with generated notes.
 
 Consumers import the module at a tag: `go get github.com/nicodarge/paperclip-plugin-go@vX.Y.Z`. The workflow uses the job's `GITHUB_TOKEN` only and needs no secret. Never create or move a tag by hand.

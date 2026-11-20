@@ -37,9 +37,12 @@ type Worker struct {
 	jobs map[string]Handler
 	// Forward receives every request no Handler owns, on the reading
 	// goroutine and in arrival order; it must send the response itself.
-	// Without it such a request is answered METHOD_NOT_FOUND.
+	// Without it such a request is answered METHOD_NOT_FOUND. It must not
+	// block: a synchronous CallHost or Conn.Call from it deadlocks, since the
+	// response can only be read by the goroutine it is blocking.
 	Forward func(req rpc.Envelope)
-	// ForwardNotification receives every notification, same ordering.
+	// ForwardNotification receives every notification, same ordering and
+	// same restriction.
 	ForwardNotification func(n rpc.Envelope)
 	// Stderr receives handler panics.
 	Stderr io.Writer
@@ -81,7 +84,8 @@ func (w *Worker) handlerOf(req rpc.Envelope) (Handler, bool) {
 	return h, ok
 }
 
-// Serve reads the host until it closes the stream.
+// Serve reads the host until it closes the stream, then settles the calls to
+// the host still waiting with a WORKER_UNAVAILABLE error. Call it once.
 func (w *Worker) Serve() error {
 	return w.host.Serve(rpc.Handlers{
 		Request: func(req rpc.Envelope) {
@@ -110,7 +114,8 @@ func (w *Worker) Serve() error {
 	})
 }
 
-// Wait blocks until every running Handler has returned.
+// Wait blocks until every running Handler has returned. Call it after Serve
+// has returned: a request read while Wait runs can start a Handler it misses.
 func (w *Worker) Wait() { w.active.Wait() }
 
 func (w *Worker) serve(h Handler, req rpc.Envelope) {
