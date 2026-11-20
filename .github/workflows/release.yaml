@@ -37,7 +37,7 @@ jobs:
         run: |
           set -euo pipefail
           current="$("${RUNNER_TEMP}/bin/svu" current)"
-          next="$("${RUNNER_TEMP}/bin/svu" next)"
+          next="$("${RUNNER_TEMP}/bin/svu" next --v0)"
           tag=""
           if [ "${next}" != "${current}" ]; then
             tag="${next}"
